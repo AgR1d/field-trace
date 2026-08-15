@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FieldTrace 设置</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+    background: #f6f7fb; color: #222;
+  }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  .card {
+    background: #fff; border-radius: 10px; padding: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    margin-bottom: 16px;
+  }
+  label { display: block; font-size: 13px; color: #555; margin: 10px 0 6px; }
+  input[type=text], input[type=number], select {
+    width: 100%; padding: 8px 10px;
+    border: 1px solid #d0d5dd; border-radius: 6px; font-size: 14px;
+    outline: none;
+  }
+  input:focus, select:focus { border-color: #3b82f6; }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+  .btn {
+    display: inline-block; padding: 8px 16px;
+    background: #3b82f6; color: #fff; border: 0;
+    border-radius: 6px; cursor: pointer; font-size: 14px;
+  }
+  .btn.secondary { background: #6b7280; }
+  .btn.danger { background: #ef4444; }
+  .btn.ghost { background: transparent; color: #3b82f6; border: 1px solid #3b82f6; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .hint { font-size: 12px; color: #888; margin-top: 4px; }
+  .status-chip {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 12px; margin-left: 6px;
+  }
+  .chip-running { background: #dcfce7; color: #166534; }
+  .chip-stopped { background: #fee2e2; color: #991b1b; }
+  .actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  .warn { background: #fef3c7; color: #92400e; padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 16px; }
+  .toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: #111827; color: #fff; padding: 8px 16px;
+    border-radius: 6px; font-size: 13px; opacity: 0; transition: opacity .2s;
+    pointer-events: none;
+  }
+  .toast.show { opacity: .95; }
+  fieldset { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 16px; margin: 0; }
+  legend { font-size: 13px; color: #333; padding: 0 6px; }
+  .check-row { display: flex; align-items: center; gap: 8px; }
+  .check-row input { margin: 0; }
+</style>
+</head>
+<body>
+  <h1>FieldTrace 外勤位置留痕</h1>
+
+  <div class="warn" id="warnName" style="display:none">
+    ⚠️ 必须先设置"工程师姓名"后才能启动自动采集。
+  </div>
+
+  <div class="card">
+    <fieldset>
+      <legend>基本设置</legend>
+      <label>工程师姓名 *</label>
+      <input id="engineerName" type="text" placeholder="如：张三" maxlength="20">
+      <div class="hint">用于文件名水印和文件夹分类，设置后不能频繁更改。</div>
+
+      <div class="row" style="margin-top: 4px;">
+        <div>
+          <label>采集间隔（分钟）</label>
+          <select id="intervalMin">
+            <option value="15">15</option>
+            <option value="30" selected>30</option>
+            <option value="60">60</option>
+            <option value="120">120</option>
+          </select>
+        </div>
+        <div>
+          <label>失败补拍等待（秒）</label>
+          <input id="retryAfterSec" type="number" min="10" max="600" value="60">
+        </div>
+      </div>
+
+      <label>本地存储目录</label>
+      <input id="storageDir" type="text" placeholder="D:\FieldTrace">
+      <div class="hint">绿联云客户端需将此目录设置为自动同步文件夹。</div>
+
+      <div class="check-row" style="margin-top: 10px;">
+        <input id="autoStart" type="checkbox">
+        <label for="autoStart" style="margin:0">开机自动启动</label>
+      </div>
+
+      <fieldset style="margin-top: 16px; border-color: #dbeafe;">
+        <legend style="color: #1e40af;">可选：地图 API Key（填了地址更准）</legend>
+        <label>高德地图 Web 服务 Key（推荐，建筑级，5000 次/日免费）</label>
+        <input id="amapKey" type="text" placeholder="如：a1b2c3d4e5f6..." maxlength="64">
+        <div class="hint">获取方式：https://console.amap.com/ → 应用管理 → 新建「Web服务」类型 → 复制 Key。20 人共用一个 Key 足够。</div>
+        <label style="margin-top: 8px;">腾讯位置服务 Key（可选，免费配额 10000 次/日/IP，20 人不填也够）</label>
+        <input id="tencentKey" type="text" placeholder="可选，留空就用免费额度" maxlength="64">
+        <div class="hint">不填也能用腾讯逆地理；如果 20 人经常同地点触发出现限额，再申请一个腾讯 Key 填上。</div>
+      </fieldset>
+    </fieldset>
+
+    <div class="actions">
+      <button class="btn" id="saveBtn">保存设置</button>
+      <button class="btn ghost" id="openDirBtn">打开本地目录</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <fieldset>
+      <legend>采集控制
+        <span id="statusChip" class="status-chip chip-stopped">未启动</span>
+      </legend>
+      <div class="hint" style="margin-bottom: 10px;">
+        当前工程师：<b id="stName">-</b>　间隔：<b id="stInt">-</b> 分钟　补拍等待：<b id="stRetry">-</b> 秒
+      </div>
+      <div class="actions">
+        <button class="btn" id="startBtn">启动采集</button>
+        <button class="btn danger" id="stopBtn">停止采集</button>
+        <button class="btn secondary" id="snapBtn">立即拍照一张</button>
+      </div>
+    </fieldset>
+  </div>
+
+  <div class="toast" id="toast">已保存</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let currentCfg = null;
+
+let toastTimer = null;
+function toast(msg, durMs) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), durMs || 1800);
+}
+
+async function refresh() {
+  const cfg = await window.api.getConfig();
+  currentCfg = cfg;
+  $('engineerName').value = cfg.engineerName || '';
+  $('storageDir').value = cfg.storageDir || '';
+  $('intervalMin').value = String(cfg.intervalMin || 30);
+  $('retryAfterSec').value = String(cfg.retryAfterSec || 60);
+  $('autoStart').checked = !!cfg.autoStart;
+  $('amapKey').value = cfg.amapKey || '';
+  $('tencentKey').value = cfg.tencentKey || '';
+  $('warnName').style.display = cfg.engineerName ? 'none' : 'block';
+  const st = await window.api.captureStatus();
+  $('stName').textContent = st.engineerName || '未设置';
+  $('stInt').textContent = st.intervalMin;
+  $('stRetry').textContent = currentCfg.retryAfterSec;
+  const chip = $('statusChip');
+  if (st.running) {
+    chip.textContent = st.hasRetry ? '采集中(待补拍)' : '采集中';
+    chip.className = 'status-chip chip-running';
+  } else {
+    chip.textContent = '已停止';
+    chip.className = 'status-chip chip-stopped';
+  }
+  $('startBtn').disabled = st.running || !cfg.engineerName;
+  $('stopBtn').disabled = !st.running;
+}
+
+$('saveBtn').addEventListener('click', async () => {
+  const name = $('engineerName').value.trim();
+  const storageDir = $('storageDir').value.trim();
+  const intervalMin = parseInt($('intervalMin').value, 10);
+  const retryAfterSec = parseInt($('retryAfterSec').value, 10);
+  const autoStart = $('autoStart').checked;
+  const amapKey = $('amapKey').value.trim();
+  const tencentKey = $('tencentKey').value.trim();
+  if (!name) {
+    toast('请填写工程师姓名');
+    return;
+  }
+  if (!storageDir) {
+    toast('请填写存储目录');
+    return;
+  }
+  await window.api.saveConfig({ engineerName: name, storageDir, intervalMin, retryAfterSec, autoStart, amapKey, tencentKey });
+  toast('已保存');
+  refresh();
+});
+
+$('openDirBtn').addEventListener('click', () => window.api.openStorage());
+
+$('startBtn').addEventListener('click', async () => {
+  const ok = await window.api.startCapture();
+  toast(ok ? '已启动采集' : '启动失败（检查工程师姓名）');
+  refresh();
+});
+$('stopBtn').addEventListener('click', async () => {
+  await window.api.stopCapture();
+  toast('已停止采集');
+  refresh();
+});
+$('snapBtn').addEventListener('click', async () => {
+  const btn = $('snapBtn');
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '拍照中...（约10~20秒）';
+  toast('正在定位+拍照，请稍候...', 10000);
+  try {
+    const r = await window.api.triggerNow();
+    if (r && r.ok) {
+      const p = r.filePath ? r.filePath.split('\\').slice(-3).join('/') : '';
+      toast('✅ 已保存：' + (p || '成功'), 4500);
+    } else {
+      const msg = r && r.error ? r.error.split(' | ')[0] : '失败';
+      toast('❌ 拍照失败：' + msg, 4500);
+    }
+    refresh();
+  } catch (e) {
+    toast('❌ 拍照异常：' + (e && e.message || e), 4500);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+});
+
+setInterval(refresh, 4000);
+refresh();
+</script>
+</body>
+</html>

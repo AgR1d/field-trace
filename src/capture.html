@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>capture</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; }
+  video { width: 640px; height: 480px; display: none; }
+  canvas { display: none; }
+  #status { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; font-family: monospace; font-size: 14px; }
+</style>
+</head>
+<body>
+<video id="video" autoplay playsinline muted></video>
+<canvas id="canvas"></canvas>
+<div id="status">idle</div>
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+let stream = null;
+
+function setStatus(txt) {
+  statusEl.textContent = txt;
+  console.log(txt);
+}
+
+function releaseCamera() {
+  if (stream) {
+    try {
+      stream.getTracks().forEach(t => {
+        try { t.stop(); } catch (_) {}
+      });
+    } catch (_) {}
+    stream = null;
+  }
+  if (video && video.srcObject) {
+    try { video.srcObject = null; } catch (_) {}
+  }
+}
+
+async function acquireCamera() {
+  // 每次重新打开，确保不占用
+  releaseCamera();
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const cams = devices.filter(d => d.kind === 'videoinput');
+  let constraints = { video: { width: 1280, height: 720, facingMode: 'user' } };
+  if (cams.length > 1) {
+    constraints.video.deviceId = cams[0].deviceId;
+  }
+  stream = await navigator.mediaDevices.getUserMedia(constraints);
+  video.srcObject = stream;
+  await new Promise((res) => video.onloadedmetadata = res);
+  video.play();
+  await new Promise(r => setTimeout(r, 500)); // 多等 200ms 确保画面稳定
+  return stream;
+}
+
+// 定位优先级：Windows 原生高精度 (Wi-Fi/基站/GPS) > IP 定位 > 2 小时缓存
+// 已跳过 navigator.geolocation：因为 Chromium 内置实现依赖 Google 网络定位服务 (maps.googleapis.com)，大陆不可用
+async function getLocation() {
+  // 1) Windows 原生定位（主进程调 PowerShell + System.Device.Location，直接拿 Windows 定位服务结果）
+  try {
+    const r = await withTimeout(window.api.windowsNativeLocation(), 18000);
+    if (r && r.ok && r.lat != null && r.lng != null) {
+      return { lat: r.lat, lng: r.lng, accuracy: r.accuracy, source: r.source || 'wifi-native', note: r.note || 'windows-native' };
+    }
+    console.warn('[GETLOC] windows-native 返回失败或空坐标', r && r.note);
+  } catch (e) {
+    console.warn('[GETLOC] windows-native 异常', e.message);
+  }
+  // 2) IP 定位降级
+  return fallbackIpLocation('win-native-skip');
+}
+
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const to = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('timeout'));
+    }, ms);
+    promise.then(
+      (v) => { if (settled) return; settled = true; clearTimeout(to); resolve(v); },
+      (e) => { if (settled) return; settled = true; clearTimeout(to); reject(e); }
+    );
+  });
+}
+
+// IP 定位通过主进程执行（绕过渲染进程 CORS 限制）
+async function fallbackIpLocation(prevNote) {
+  try {
+    const r = await window.api.ipLocation();
+    if (r.ok) {
+      return { lat: r.lat, lng: r.lng, accuracy: r.accuracy, source: r.source, note: (prevNote || '') + ' → ' + r.note };
+    }
+  } catch (e) {
+    console.warn('ipLocation IPC failed:', e.message);
+  }
+  return { lat: null, lng: null, accuracy: null, source: 'none', note: (prevNote || '') + ' → ip-all-fail' };
+}
+
+function fmtDateTime(d) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+const CACHE_KEY = 'ft_loc_cache_v1';
+const CACHE_MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 小时
+
+function writeLocCache(cache) {
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify(cache)); } catch (_) {}
+}
+function readLocCache() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const c = JSON.parse(raw);
+    if (!c || !c.timestamp) return null;
+    const age = Date.now() - c.timestamp;
+    if (age > CACHE_MAX_AGE_MS) return null;
+    c.ageMin = Math.round(age / 60000);
+    return c;
+  } catch (_) { return null; }
+}
+
+async function reverseGeocode(lat, lng, source) {
+  if (lat == null || lng == null) return null;
+  // 主进程统一处理逆地理（含坐标系转换 + 高德/腾讯/国际兜底链路）
+  try {
+    const r = await withTimeout(
+      window.api.reverseGeocode({ lat, lng, source }),
+      12000
+    );
+    if (typeof r === 'string' && r.trim()) return r.trim().slice(0, 80);
+    return null;
+  } catch (e) {
+    console.warn('reverseGeocode main failed', e.message);
+    return null;
+  }
+}
+
+function drawWatermark(lat, lng, accuracy, source, note, engineerName, takenAt, address, quality, cacheAgeMin) {
+  const w = video.videoWidth || 1280;
+  const h = video.videoHeight || 720;
+  canvas.width = w;
+  canvas.height = h;
+  ctx.drawImage(video, 0, 0, w, h);
+
+  // 质量等级：good 绿 (wifi + 坐标准) / mid 黄 (IP 或 缓存) / bad 红 (全失败)
+  const qualityMap = {
+    good: { fill: 'rgba(0,0,0,0.55)', stroke: 'rgba(52,211,153,0.9)', badge: '#10b981', text: '定位准' },
+    mid:  { fill: 'rgba(0,0,0,0.60)', stroke: 'rgba(250,204,21,0.9)',  badge: '#f59e0b', text: '定位降级' },
+    bad:  { fill: 'rgba(0,0,0,0.70)', stroke: 'rgba(248,113,113,0.9)', badge: '#ef4444', text: '定位失败' }
+  };
+  const q = qualityMap[quality] || qualityMap.bad;
+
+  const padX = 20, padY = 16;
+  const fontSize = Math.max(18, Math.floor(w / 50));
+  ctx.font = `${fontSize}px "Microsoft YaHei", Consolas, monospace`;
+  ctx.textBaseline = 'top';
+
+  const lines = [];
+  lines.push(`工程师: ${engineerName || '未知'}`);
+  lines.push(`时间  : ${fmtDateTime(takenAt)}`);
+  if (lat != null && lng != null) {
+    lines.push(`坐标  : ${Number(lat).toFixed(6)}, ${Number(lng).toFixed(6)}${cacheAgeMin ? ` (缓存${cacheAgeMin}分钟前)` : ''}`);
+    const accStr = accuracy != null ? (Math.round(accuracy) + ' 米') : 'NA';
+    lines.push(`精度  : ${accStr} (${source || '?'})`);
+    if (address) {
+      const full = '地址  : ' + String(address);
+      const maxLineChars = 38;
+      if (full.length <= maxLineChars) {
+        lines.push(full);
+      } else {
+        for (let i = 0; i < full.length; i += maxLineChars) {
+          const chunk = (i === 0 ? '' : '        ') + full.slice(i, i + maxLineChars);
+          lines.push(chunk);
+          if (lines.length > 7) break;
+        }
+      }
+    }
+    if (note) {
+      const n = String(note).length > 56 ? String(note).slice(0, 56) + '…' : String(note);
+      lines.push(`定位链: ${n}`);
+    }
+  } else {
+    lines.push(`定位  : 失败`);
+    const fail = [];
+    if (source) fail.push(source);
+    if (note) fail.push(note);
+    const msg = fail.join(' | ');
+    if (msg) {
+      const maxLineChars = 42;
+      const flat = msg;
+      for (let i = 0; i < flat.length && lines.length < 6; i += maxLineChars) {
+        lines.push(`   ' ${flat.slice(i, i + maxLineChars)}`);
+      }
+    }
+    lines.push(`   ' 检查: 系统位置权限、摄像头权限、网络`);
+  }
+
+  const badgeLine = `[${q.text}]`;
+  lines.push(''); // 空行再放角标不占排版，用最后一行之前的右上角画 badge
+
+  const boxW = Math.min(w * 0.6, Math.max(360, Math.max(
+    ...lines.map(l => ctx.measureText(l).width),
+    Math.max(...(lines.slice(0,-1).map(l=>ctx.measureText(l).width)))
+  ) + padX * 2));
+
+  const lineH = fontSize + 6;
+  const maxInnerW = boxW - padX * 2;
+
+  // 对超长行按字符折行
+  const wrapLines = (rawLines) => {
+    const out = [];
+    for (const raw of rawLines) {
+      let cur = '';
+      for (const ch of raw) {
+        const trial = cur + ch;
+        if (ctx.measureText(trial).width > maxInnerW && cur) {
+          out.push(cur); cur = ch;
+        } else {
+          cur = trial;
+        }
+      }
+      if (cur) out.push(cur);
+    }
+    return out;
+  };
+  const contentLines = wrapLines(lines.slice(0, -1)); // 去掉最后那个占位空行
+
+  const finalBoxH = contentLines.length * lineH + padY;
+  const boxX = w - boxW - 10;
+  const finalBoxY = h - finalBoxH - 10;
+
+  ctx.fillStyle = q.fill;
+  ctx.fillRect(boxX, finalBoxY, boxW, finalBoxH);
+  ctx.strokeStyle = q.stroke;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(boxX, finalBoxY, boxW, finalBoxH);
+  ctx.lineWidth = 1;
+
+  // 右上角质量角标
+  const badgePadX = 10, badgePadY = 4;
+  ctx.font = `bold ${Math.max(12, fontSize - 6)}px "Microsoft YaHei", sans-serif`;
+  const badgeW = ctx.measureText(badgeLine).width + badgePadX * 2;
+  const badgeH = fontSize + badgePadY * 2;
+  const bx = boxX + boxW - badgeW - 6;
+  const by = finalBoxY + 6;
+  ctx.fillStyle = q.badge;
+  roundRect(ctx, bx, by, badgeW, badgeH, 4);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.textBaseline = 'top';
+  ctx.fillText(badgeLine, bx + badgePadX, by + badgePadY);
+  // 恢复字体
+  ctx.font = `${fontSize}px "Microsoft YaHei", Consolas, monospace`;
+
+  ctx.fillStyle = '#fff';
+  contentLines.forEach((line, i) => {
+    ctx.fillText(line, boxX + padX, finalBoxY + padY / 2 + i * lineH);
+  });
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+async function doCapture(isManual) {
+  const takenAt = new Date();
+  const status = await window.api.captureStatus();
+  const name = status.engineerName;
+  let loc = { lat: null, lng: null, accuracy: null, source: 'none', note: '' };
+  let cache = null;
+  try {
+    setStatus('定位中...');
+    loc = await getLocation();
+  } catch (e) {
+    loc.note = 'getLocation-throw:' + (e.message || String(e));
+    console.warn(e);
+  }
+  // 实时定位失败，读缓存
+  let fromCache = false;
+  if (loc.lat == null || loc.lng == null) {
+    cache = readLocCache();
+    if (cache) {
+      loc = {
+        lat: cache.lat, lng: cache.lng, accuracy: cache.accuracy,
+        source: cache.source,
+        note: [loc.note, `缓存回读(来自${cache.source}, ${cache.ageMin}分钟前)`].filter(Boolean).join(' → ')
+      };
+      fromCache = true;
+    }
+  } else {
+    // 实时定位成功，写缓存（连同之前解析到的地址一起）
+    writeLocCache({
+      lat: loc.lat, lng: loc.lng, accuracy: loc.accuracy, source: loc.source,
+      note: loc.note, address: null, timestamp: Date.now()
+    });
+  }
+  // 逆地理：有坐标就尝试，主进程已经加了总超时（各源合计约 12 秒）
+  let address = fromCache && cache ? cache.address : null;
+  if (loc.lat != null && loc.lng != null && !address) {
+    setStatus('定位中（逆地理解析地址）...');
+    try {
+      const r = await reverseGeocode(loc.lat, loc.lng, loc.source);
+      if (r) address = r;
+    } catch (e) {
+      console.warn('reverse geocode skip:', e.message);
+    }
+    if (address && !fromCache) {
+      // 顺带把成功解析的地址写进缓存
+      const cur = readLocCache();
+      if (cur) { cur.address = address; writeLocCache(cur); }
+    }
+  }
+  // 质量等级
+  let quality = 'bad';
+  const cacheAgeMin = fromCache ? (cache && cache.ageMin != null ? cache.ageMin : null) : null;
+  if (loc.lat != null && loc.lng != null) {
+    const isNativeWifi = (loc.source === 'wifi' || loc.source === 'wifi-native');
+    const accuracyOK = loc.accuracy == null || loc.accuracy < 2000; // 精度优于 2km 才算原生高质量数据
+    if (!fromCache && isNativeWifi && accuracyOK) quality = 'good';
+    else quality = 'mid'; // IP 或 cache 或 低精度原生
+  }
+  try {
+    setStatus('摄像头启动中...');
+    await acquireCamera();
+  } catch (e) {
+    setStatus('摄像头失败: ' + e.message);
+    releaseCamera();
+    await window.api.sendCaptureResult({
+      ok: false, isManual, error: `摄像头失败: ${e.message}`,
+      lat: loc.lat, lng: loc.lng, accuracy: loc.accuracy, source: loc.source, note: loc.note,
+      address, quality, cacheAgeMin,
+      takenAt: takenAt.getTime()
+    });
+    return;
+  }
+  try {
+    setStatus('拍照+水印...');
+    drawWatermark(loc.lat, loc.lng, loc.accuracy, loc.source, loc.note, name, takenAt, address, quality, cacheAgeMin);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
+    const b64 = dataUrl.split(',')[1];
+    const buf = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    setStatus('保存...');
+    await window.api.sendCaptureResult({
+      ok: true, isManual,
+      imageBuffer: Array.from(buf),
+      lat: loc.lat, lng: loc.lng, accuracy: loc.accuracy, source: loc.source, note: loc.note,
+      address, quality, cacheAgeMin,
+      takenAt: takenAt.getTime()
+    });
+    setStatus('ok');
+  } catch (e) {
+    setStatus('合成失败: ' + e.message);
+    await window.api.sendCaptureResult({
+      ok: false, isManual, error: `合成/保存失败: ${e.message}`,
+      lat: loc.lat, lng: loc.lng, accuracy: loc.accuracy, source: loc.source, note: loc.note,
+      address, quality, cacheAgeMin,
+      takenAt: takenAt.getTime()
+    });
+  } finally {
+    releaseCamera();
+  }
+}
+
+window.api.onTriggerCapture(async ({ isManual }) => {
+  await doCapture(isManual);
+});
+</script>
+</body>
+</html>

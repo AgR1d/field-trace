@@ -1,0 +1,10 @@
+{
+  "_说明": "本文件是模板。克隆到本地后，复制一份改名为 config.json 再填真实值。config.json 已加入 .gitignore，不会被提交。",
+  "engineerName": "张三",
+  "storageDir": "D:\\FieldTraceData",
+  "intervalMin": 30,
+  "retryAfterSec": 60,
+  "autoStart": true,
+  "amapKey": "在这里填团队共用的 高德 Web 服务 Key，留空则降级走腾讯",
+  "tencentKey": "腾讯位置服务 Key（可选，一般留空即可）"
+}

@@ -52,9 +52,9 @@ field-trace/
 - 下载：https://nodejs.org/zh-cn/download → Windows Installer (.msi)
 - 安装时一路 Next，默认选项就行
 
-### 步骤 2：复制项目目录
-- 把整个 `field-trace/` 文件夹拷到新机器任意位置（路径不要带中文/空格/特殊字符）
-- 建议路径：`C:\workspace\field-trace`
+### 步骤 2：获取项目代码
+- **推荐：用 Git 拉取**（见「三、Git 代码仓库与异地迭代」），异地任何设备一条命令就能拿到最新代码，不用再手动拷贝整个文件夹
+- 备选：把整个 `field-trace/` 文件夹拷到新机器任意位置（路径不要带中文/空格/特殊字符），建议路径 `C:\workspace\field-trace`
 
 ### 步骤 3：装依赖
 - 打开 PowerShell 或 CMD，`cd` 到项目目录
@@ -75,7 +75,73 @@ npm run dev
 
 ---
 
-## 三、改完代码 → 打包发布（标准流程）
+## 三、Git 代码仓库与异地迭代
+
+代码已托管到 Gitee，异地任何设备都能拉取/推送，不再需要手动拷贝整个文件夹。
+
+### 仓库信息
+- 仓库地址：`https://gitee.com/agr1d/field-trace`（私有仓库）
+- 默认分支：`master`
+- 本机 Git 安装路径：`D:\Program Files\Git\cmd\git.exe`（**注意：本机 Git 装在 D 盘**，不是默认的 C 盘；如果 `git` 命令报找不到，用绝对路径调用：`& "D:\Program Files\Git\cmd\git.exe" <参数>`）
+
+### 已安全忽略、不会上传的内容（见 `.gitignore`）
+- `node_modules/`（约 200M）
+- `dist/`、`win-unpacked/`（打包产物）
+- `config.json`（含高德 Key / 腾讯 Key / 本地目录，**绝不进仓库**）
+- `storage/`、`.local-cache/`、`.userdata/`（本地照片/调试数据）
+- 日志文件、临时文件、调试脚本
+
+仓库里只保留 `config.example.json` 模板；每台新机器 clone 后需复制一份为 `config.json` 再填真实值。
+
+### 首次在新设备拉取代码
+```powershell
+git clone https://gitee.com/agr1d/field-trace.git
+cd field-trace
+
+# 生成本地配置（模板里没有真实 Key，需自行填写）
+copy config.example.json config.json
+# 编辑 config.json，填：engineerName / storageDir / amapKey
+
+# 装依赖 + 调试
+npm install
+npm run dev
+```
+
+### 日常开发：改完代码提交推送
+```powershell
+cd <项目目录>
+git add -A
+git commit -m "feat: 说明本次改动"   # 提交规范见下
+git push
+```
+
+### 提交信息规范（建议）
+- `feat:` 新功能
+- `fix:` 修 bug
+- `docs:` 文档/注释
+- `refactor:` 重构（行为不变）
+- `chore:` 构建/依赖等杂项
+
+### Git 常见报错速查
+| 报错 | 原因 | 解决 |
+|---|---|---|
+| `fatal: not a git repository` | 当前目录不是仓库（或 `.git` 被清理掉） | 先 `git init -b master` 再继续；**若之前已有提交，不要重复 init**，避免历史分叉 |
+| `fatal: 'origin' does not appear to be a git repository` | 远程地址没关联 | `git remote add origin https://gitee.com/agr1d/field-trace.git` |
+| 推送要求输入账号/密码 | HTTPS 需要认证 | 弹窗用浏览器扫码登录；或在 Gitee「设置→私人令牌」生成令牌，密码处粘贴令牌（**不要填登录密码**）|
+| `non-fast-forward`（推送被拒） | 远端有新提交，本地落后 | `git pull --rebase` 合并后再 push（不要用 `--force` 覆盖）|
+| `git` 命令找不到 | Git 没在 PATH 或装在 D 盘 | 用绝对路径 `& "D:\Program Files\Git\cmd\git.exe" ...` |
+
+### 注意：ExecutionPolicy 限制
+本机 PowerShell 默认 `ExecutionPolicy=Restricted`，命令行工具里跑 `git`/`npm` 可能被拦。需要时先临时放开、用完恢复：
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
+# ... 执行 git / npm 操作 ...
+Set-ExecutionPolicy -Scope CurrentUser Restricted -Force
+```
+
+---
+
+## 四、改完代码 → 打包发布（标准流程）
 
 ### 推荐方法 A：一键 rebuild-all（日常用这个）
 
@@ -131,7 +197,7 @@ npx electron-builder --win portable
 
 ---
 
-## 四、常见维护场景 SOP
+## 五、常见维护场景 SOP
 
 ### SOP 1：改采集间隔默认值（比如从 30 分钟 → 45 分钟）
 1. 打开 `src/main.js` → 找到 `loadConfig()` 的 `defaults`
@@ -161,7 +227,7 @@ npx electron-builder --win portable
 
 ---
 
-## 五、故障排查 Checklist
+## 六、故障排查 Checklist
 
 ### 打包故障
 
@@ -188,7 +254,7 @@ npx electron-builder --win portable
 
 ---
 
-## 六、20 人团队 Key 和配额管理
+## 七、20 人团队 Key 和配额管理
 
 - 高德 Web 服务 Key：20 人共用 1 个，5000 次/日（20 人×24 次=480 次，远够）
 - 腾讯：默认不填 Key，走 IP 免费额度 10000 次/日/IP，只有当部署在同一公司内网出口（20 人共 1 IP）且都在同地频繁拍时，才需要填 Key
@@ -198,7 +264,7 @@ npx electron-builder --win portable
 
 ---
 
-## 七、最终部署 Checklist（20 人用，可直接发群）
+## 八、最终部署 Checklist（20 人用，可直接发群）
 
 ### 管理者准备（1 次性，约 10 分钟）
 

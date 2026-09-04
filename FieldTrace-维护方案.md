@@ -37,6 +37,7 @@ field-trace/
 | WGS84 → GCJ02 坐标转换公式 | `src/main.js` → `function wgs84ToGcj02()` |
 | 逆地理 3 级链路（高德→腾讯→兜底） | `src/main.js` → `ipcMain.handle('location:reverse')` |
 | 设置窗口 UI（加/删输入框） | `src/settings.html` |
+| 每周定位地址汇总 CSV（周表生成/周号/追加） | `src/main.js` → `appendWeeklyCsv()` + `isoWeekFromStr()`，落盘成功后调用 |
 | 新增 IPC 接口 | 改 3 处：`main.js` 加 `ipcMain.handle` → `preload.js` 暴露 → `html` 用 `window.api.xxx` |
 
 ---

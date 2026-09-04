@@ -53,6 +53,54 @@ function formatDate(d) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+// 由 "YYYY-MM-DD" 计算 ISO 周（周一为一周开始），用于周汇总表文件命名
+function isoWeekFromStr(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const day = dt.getUTCDay() || 7;
+  dt.setUTCDate(dt.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((dt - yearStart) / 86400000) + 1) / 7);
+  return { year: dt.getUTCFullYear(), week };
+}
+
+// 每次成功保存拍照后，把该次定位地址追加进"本周"的 CSV 汇总表；跨周自动新建下一份
+function appendWeeklyCsv(rec) {
+  try {
+    const timeStr = new Date(rec.ts).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai', hour12: false }).slice(0, 16);
+    const { year, week } = isoWeekFromStr(timeStr.slice(0, 10));
+    const fileName = `FieldTrace_周汇总_${year}-W${pad(week)}.csv`;
+    const filePath = path.join(config.storageDir, fileName);
+    if (!fs.existsSync(config.storageDir)) fs.mkdirSync(config.storageDir, { recursive: true });
+
+    const header = ['时间', '工程师', '纬度', '经度', '精度(米)', '定位来源', '质量', '地址'];
+    const esc = (v) => {
+      v = v == null ? '' : String(v);
+      return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+    };
+    const isEmptyTable = !fs.existsSync(filePath) || fs.statSync(filePath).size === 0;
+    const row = [
+      timeStr,
+      rec.engineer,
+      rec.lat != null ? Number(rec.lat).toFixed(6) : '',
+      rec.lng != null ? Number(rec.lng).toFixed(6) : '',
+      rec.acc != null ? String(Math.round(rec.acc)) : '',
+      rec.source || '',
+      rec.quality || '',
+      rec.address || `无地址(${rec.source || 'unknown'})`
+    ];
+    const line = row.map(esc).join(',') + '\r\n';
+    // 表头带 UTF-8 BOM，保证 Excel/WPS 打开中文不乱码
+    const head = isEmptyTable ? '\ufeff' + header.map(esc).join(',') + '\r\n' : '';
+    fs.appendFileSync(filePath, head + line, 'utf8');
+    log(`[WEEKCSV] 已记录周表: ${fileName} (${timeStr})`);
+    return filePath;
+  } catch (e) {
+    log(`[WEEKCSV] 周表追加失败: ${e.message}`);
+    return null;
+  }
+}
+
 function log(msg) {
   const ts = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai', hour12: false }) + '+08';
   const line = `[${ts}] ${msg}\n`;
@@ -279,6 +327,7 @@ ipcMain.handle('capture:result', (_evt, payload) => {
       fs.writeFileSync(fpath, Buffer.from(imageBuffer));
       ret = { ok: true, error: null, filePath: fpath, loc: ret.loc };
       log(`[CAPTURE] 已保存 ${fname} (${source}, 精度${accuracy != null ? Math.round(accuracy) : '?'}m, ${isManual ? '手动' : '自动'})${noteSuffix}${extraSuffix}`);
+      appendWeeklyCsv({ ts: takenAt, engineer: name, lat, lng, acc: accuracy, source, quality: qualityStr, address });
       if (pendingRetry && !isManual) {
         log('[RETRY] 补拍成功，清理待重试状态');
         pendingRetry = null;

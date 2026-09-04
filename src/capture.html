@@ -27,6 +27,9 @@ function setStatus(txt) {
 }
 
 function releaseCamera() {
+  if (video) {
+    try { video.pause(); } catch (_) {}
+  }
   if (stream) {
     try {
       stream.getTracks().forEach(t => {
@@ -40,8 +43,22 @@ function releaseCamera() {
   }
 }
 
+// 等待视频可出帧：轮询 readyState/videoWidth（带超时兜底）。
+// 不能依赖一次性 loadedmetadata 事件，否则视频元数据先于赋值加载完时 promise 永不 resolve，
+// 采集会挂起、finally 里的 releaseCamera() 永远执行不到，导致摄像头不关闭。
+async function waitVideoReady(timeoutMs = 4000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    try {
+      if (video.readyState >= 2 && video.videoWidth > 0) return true;
+    } catch (_) {}
+    await new Promise(r => setTimeout(r, 50));
+  }
+  return false;
+}
+
 async function acquireCamera() {
-  // 每次重新打开，确保不占用
+  // 每次采集时新开摄像头，确保先释放上次残留
   releaseCamera();
   const devices = await navigator.mediaDevices.enumerateDevices();
   const cams = devices.filter(d => d.kind === 'videoinput');
@@ -51,9 +68,8 @@ async function acquireCamera() {
   }
   stream = await navigator.mediaDevices.getUserMedia(constraints);
   video.srcObject = stream;
-  await new Promise((res) => video.onloadedmetadata = res);
-  video.play();
-  await new Promise(r => setTimeout(r, 500)); // 多等 200ms 确保画面稳定
+  try { await video.play(); } catch (_) {}
+  await waitVideoReady();
   return stream;
 }
 
